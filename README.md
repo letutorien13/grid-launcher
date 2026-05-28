@@ -32,7 +32,7 @@ Placez-y les fichiers `applet.js` et `metadata.json`.
 
 ### 2. Activer l'applet
 
-* Faites un clic droit sur votre tableau de bord Cinnamon et sélectionnez **"Ajouter des applets au tableau de bord"**.
+* Faites un clic droit sur votre tableau de bord Cinnamon et sélectionnez **"applets"**.
 * Recherchez **Grid Launcher**.
 * Cliquez sur le bouton **"+"** pour l'ajouter à l'emplacement de votre choix.
 
