@@ -5,6 +5,7 @@ const Cinnamon = imports.gi.Cinnamon;
 const GLib = imports.gi.GLib;
 const Gio = imports.gi.Gio;
 const Main = imports.ui.main;
+const Tooltips = imports.ui.tooltips;
 
 const STORAGE_PATH = GLib.get_home_dir() + '/.config/cinnamon_grid_launcher_data.json';
 const POPUP_COLUMNS = 6;
@@ -308,6 +309,7 @@ MyApplet.prototype = {
             if (loadedApps[i]) {
                 let icon = loadedApps[i].create_icon_texture(24);
                 bin.set_child(icon);
+                new Tooltips.Tooltip(bin, loadedApps[i].get_name());
             } else {
                 let placeholder = new St.BoxLayout({ style_class: 'empty-slot' });
                 bin.set_child(placeholder);
@@ -334,6 +336,7 @@ MyApplet.prototype = {
                 });
 
                 btn.set_child(app.create_icon_texture(48));
+                new Tooltips.Tooltip(btn, app.get_name());
 
                 btn.connect('clicked', function() {
                     app.activate();
