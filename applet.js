@@ -7,6 +7,46 @@ const Gio = imports.gi.Gio;
 const Main = imports.ui.main;
 
 const STORAGE_PATH = GLib.get_home_dir() + '/.config/cinnamon_grid_launcher_data.json';
+const POPUP_COLUMNS = 6;
+const DISPLAY_GRID = 'grid';
+const DISPLAY_LIST = 'list';
+
+function AppListMenuItem(applet, app) {
+    this._init(applet, app);
+}
+
+AppListMenuItem.prototype = {
+    __proto__: PopupMenu.PopupBaseMenuItem.prototype,
+
+    _init: function(applet, app) {
+        PopupMenu.PopupBaseMenuItem.prototype._init.call(this, { reactive: true, activate: true });
+
+        this.applet = applet;
+        this.app = app;
+        this.appId = app.get_id();
+
+        let icon = app.create_icon_texture(24);
+        if (icon)
+            this.addActor(icon, { span: 0 });
+
+        this.label = new St.Label({ text: app.get_name() });
+        this.addActor(this.label);
+        this.actor.label_actor = this.label;
+
+        this.connect('activate', function() {
+            this.app.activate();
+            this.applet.menu.close();
+        });
+
+        this.actor.connect('button-press-event', function(actor, event) {
+            if (event.get_button() === 3) {
+                this.applet._showAppContextMenu(this.actor, this.appId);
+                return true;
+            }
+            return false;
+        });
+    }
+};
 
 function MyApplet(metadata, orientation, panel_height, instance_id) {
     this._init(metadata, orientation, panel_height, instance_id);
@@ -21,15 +61,14 @@ MyApplet.prototype = {
         this.instance_id = instance_id;
         this.orientation = orientation;
         this.appSystem = Cinnamon.AppSystem.get_default();
-
         this._contextMenuActor = null;
         this._stageSignalId = null;
         this._originalContains = null;
 
         let data = this._loadData();
-        this.savedApps = data.apps;
-        this.categoryName = data.name;
-
+        this.savedApps = data.apps || [];
+        this.categoryName = data.name || "Grille d'applications";
+        this.displayMode = data.displayMode === DISPLAY_LIST ? DISPLAY_LIST : DISPLAY_GRID;
         this.set_applet_tooltip(this.categoryName);
 
         this.launcherBox = new St.BoxLayout({ style_class: 'applet-box', reactive: true });
@@ -42,10 +81,26 @@ MyApplet.prototype = {
         this.menu = new Applet.AppletPopupMenu(this, orientation);
         this.menuManager.addMenu(this.menu);
 
-        this.popupGrid = new St.Table({ homogeneous: true, style_class: 'popup-grid' });
-        let menuSection = new PopupMenu.PopupMenuSection();
-        menuSection.actor.add_actor(this.popupGrid);
-        this.menu.addMenuItem(menuSection);
+        this.categoryLabel = new St.Label({
+            style_class: 'category-title-label',
+            text: this.categoryName
+        });
+
+        this.popupGrid = new St.Table({
+            homogeneous: true,
+            style_class: 'popup-grid',
+            style: 'width: 500; padding: 2 px; spacing-rows: 2 px; spacing-columns: 2 px;'
+        });
+
+        this.menuContentBox = new St.BoxLayout({ vertical: true });
+        this.menuContentBox.add_actor(this.categoryLabel);
+        this.menuContentBox.add_actor(this.popupGrid);
+
+        this.menuSection = new PopupMenu.PopupMenuSection();
+        this.menuSection.actor.add_actor(this.menuContentBox);
+        this.menu.addMenuItem(this.menuSection);
+
+        this._listMenuItems = [];
 
         this.menu.connect('open-state-changed', (menu, open) => {
             if (!open) this._closeAppContextMenu();
@@ -55,7 +110,64 @@ MyApplet.prototype = {
         this._applet_context_menu.addMenuItem(this.editNameMenuItem);
         this.editNameMenuItem.connect('activate', () => this._renameCategory());
 
+        this.sortByNameMenuItem = new PopupMenu.PopupMenuItem("Trier par nom");
+        this._applet_context_menu.addMenuItem(this.sortByNameMenuItem);
+        this.sortByNameMenuItem.connect('activate', () => this._sortAppsByName());
+
+        this.toggleDisplayModeMenuItem = new PopupMenu.PopupMenuItem("");
+        this._applet_context_menu.addMenuItem(this.toggleDisplayModeMenuItem);
+        this.toggleDisplayModeMenuItem.connect('activate', () => this._toggleDisplayMode());
+        this._updateDisplayModeMenuLabel();
+
         this.actor._delegate = this;
+        this._refreshUI();
+    },
+
+    _updateDisplayModeMenuLabel: function() {
+        if (!this.toggleDisplayModeMenuItem)
+            return;
+        let text = this.displayMode === DISPLAY_LIST
+            ? "Afficher en mode grille"
+            : "Afficher en mode liste";
+        this.toggleDisplayModeMenuItem.label.set_text(text);
+    },
+
+    _toggleDisplayMode: function() {
+        this.displayMode = this.displayMode === DISPLAY_LIST ? DISPLAY_GRID : DISPLAY_LIST;
+        this._updateDisplayModeMenuLabel();
+        this._saveData();
+        this._refreshUI();
+    },
+
+    _clearListMenuItems: function() {
+        if (!this._listMenuItems)
+            return;
+        for (let i = 0; i < this._listMenuItems.length; i++)
+            this._listMenuItems[i].destroy();
+        this._listMenuItems = [];
+    },
+
+    _updateCategoryLabel: function() {
+        if (!this.categoryLabel)
+            return;
+        let name = (this.categoryName || '').trim();
+        this.categoryLabel.text = name || "Grille d'applications";
+    },
+
+    _sortAppsByName: function() {
+        if (!this.savedApps || this.savedApps.length < 2)
+            return;
+
+        let self = this;
+        this.savedApps.sort(function(idA, idB) {
+            let appA = self.appSystem.lookup_app(idA);
+            let appB = self.appSystem.lookup_app(idB);
+            let nameA = appA ? appA.get_name() : idA;
+            let nameB = appB ? appB.get_name() : idB;
+            return nameA.localeCompare(nameB);
+        });
+
+        this._saveData();
         this._refreshUI();
     },
 
@@ -73,6 +185,7 @@ MyApplet.prototype = {
                     if (newName) {
                         this.categoryName = newName;
                         this.set_applet_tooltip(this.categoryName);
+                        this._updateCategoryLabel();
                         this._saveData();
                     }
                 }
@@ -84,7 +197,6 @@ MyApplet.prototype = {
 
     _showAppContextMenu: function(sourceActor, appId) {
         this._closeAppContextMenu();
-
         this._contextMenuActor = new St.BoxLayout({
             style_class: 'custom-context-menu',
             vertical: true,
@@ -157,7 +269,6 @@ MyApplet.prototype = {
         } else if (source && source.id) {
             appId = source.id;
         }
-
         if (appId) {
             if (!this.savedApps.includes(appId)) {
                 this.savedApps.push(appId);
@@ -170,8 +281,18 @@ MyApplet.prototype = {
     },
 
     _refreshUI: function() {
+        this._updateCategoryLabel();
+
+        this._clearListMenuItems();
+
         this.gridIcon.destroy_all_children();
         this.popupGrid.destroy_all_children();
+
+        let isListMode = this.displayMode === DISPLAY_LIST;
+        if (isListMode)
+            this.popupGrid.hide();
+        else
+            this.popupGrid.show();
 
         let loadedApps = [];
         this.savedApps.forEach(appId => {
@@ -179,47 +300,57 @@ MyApplet.prototype = {
             if (app) loadedApps.push(app);
         });
 
+        // Petite grille sur le panel (inchangée)
         for (let i = 0; i < 4; i++) {
             let row = Math.floor(i / 2);
             let col = i % 2;
             let bin = new St.Bin({ style_class: 'mini-icon-padding' });
-
             if (loadedApps[i]) {
                 let icon = loadedApps[i].create_icon_texture(24);
                 bin.set_child(icon);
             } else {
-                let placeholder = new St.BoxLayout({
-                    style_class: 'empty-slot',
-                });
+                let placeholder = new St.BoxLayout({ style_class: 'empty-slot' });
                 bin.set_child(placeholder);
             }
             this.gridIcon.add(bin, { row: row, col: col });
         }
 
-        loadedApps.forEach((app, index) => {
-            let row = Math.floor(index / 3);
-            let col = index % 3;
-            let appId = app.get_id();
+        if (isListMode) {
+            for (let i = 0; i < loadedApps.length; i++) {
+                let item = new AppListMenuItem(this, loadedApps[i]);
+                this.menu.addMenuItem(item);
+                this._listMenuItems.push(item);
+            }
+        } else {
+            loadedApps.forEach(function(app, index) {
+                let row = Math.floor(index / POPUP_COLUMNS);
+                let col = index % POPUP_COLUMNS;
+                let appId = app.get_id();
 
-            let btn = new St.Button({ style_class: 'app-button', reactive: true });
-            let icon = app.create_icon_texture(48);
-            btn.set_child(icon);
+                let btn = new St.Button({
+                    style_class: 'app-button',
+                    reactive: true,
+                    style: 'padding: 6px;'
+                });
 
-            btn.connect('clicked', () => {
-                app.activate();
-                this.menu.close();
-            });
+                btn.set_child(app.create_icon_texture(48));
 
-            btn.connect('button-press-event', (actor, event) => {
-                if (event.get_button() === 3) {
-                    this._showAppContextMenu(btn, appId);
-                    return true;
-                }
-                return false;
-            });
+                btn.connect('clicked', function() {
+                    app.activate();
+                    this.menu.close();
+                }.bind(this));
 
-            this.popupGrid.add(btn, { row: row, col: col });
-        });
+                btn.connect('button-press-event', function(actor, event) {
+                    if (event.get_button() === 3) {
+                        this._showAppContextMenu(btn, appId);
+                        return true;
+                    }
+                    return false;
+                }.bind(this));
+
+                this.popupGrid.add(btn, { row: row, col: col });
+            }, this);
+        }
     },
 
     on_applet_clicked: function() {
@@ -229,7 +360,7 @@ MyApplet.prototype = {
     },
 
     _loadData: function() {
-        let defaultData = { apps: [], name: "Grille d'applications" };
+        let defaultData = { apps: [], name: "Grille d'applications", displayMode: DISPLAY_GRID };
         try {
             let file = Gio.File.new_for_path(STORAGE_PATH);
             if (file.query_exists(null)) {
@@ -238,7 +369,15 @@ MyApplet.prototype = {
                     let json = JSON.parse(String(content));
                     let data = json[this.instance_id];
                     if (data) {
-                        if (Array.isArray(data)) return { apps: data, name: "Grille d'applications" };
+                        if (Array.isArray(data)) {
+                            return {
+                                apps: data,
+                                name: "Grille d'applications",
+                                displayMode: DISPLAY_GRID
+                            };
+                        }
+                        if (!data.displayMode)
+                            data.displayMode = DISPLAY_GRID;
                         return data;
                     }
                 }
@@ -259,7 +398,11 @@ MyApplet.prototype = {
                     currentData = JSON.parse(String(content));
                 }
             }
-            currentData[this.instance_id] = { apps: this.savedApps, name: this.categoryName };
+            currentData[this.instance_id] = {
+                apps: this.savedApps,
+                name: this.categoryName,
+                displayMode: this.displayMode
+            };
             file.replace_contents(JSON.stringify(currentData), null, false, Gio.FileCreateFlags.NONE, null);
         } catch (e) {
             global.logError(e);
